@@ -25,6 +25,7 @@
 #include "supertux/screen.hpp"
 #include "supertux/screen_fade.hpp"
 #include "supertux/screen_manager.hpp"
+#include "supertux/wg_snapshot.hpp"
 #include "supertux/world.hpp"
 #include "util/log.hpp"
 #include "util/reader.hpp"
@@ -130,6 +131,7 @@ GameManager::start_worldmap(const World& world, const std::string& worldmap_file
   
   if (!Editor::current())
     m_savegame->get_profile().set_last_world(world.get_basename());
+  wg::world_dir = world.get_basedir();
 
   ScreenManager::current()->push_screen(std::move(worldmap));
   return true;

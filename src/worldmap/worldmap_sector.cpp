@@ -42,6 +42,7 @@
 #include "supertux/screen_manager.hpp"
 #include "supertux/shrinkfade.hpp"
 #include "supertux/tile.hpp"
+#include "supertux/wg_snapshot.hpp"
 #include "util/file_system.hpp"
 #include "worldmap/camera.hpp"
 #include "worldmap/level_tile.hpp"
@@ -332,6 +333,23 @@ WorldMapSector::update(float dt_sec)
     }
   }
 
+  // A Resume snapshot's level: Tux goes to its tile and enters it.
+  if (wg::enter_pending && !m_tux->is_moving())
+  {
+    wg::enter_pending = false;
+    for (const auto& tile : get_objects_by_type<LevelTile>())
+    {
+      if (m_parent.m_levels_path + tile.get_level_filename() == wg::pending.level)
+      {
+        m_tux->set_tile_pos(tile.get_tile_pos());
+        m_parent.m_enter_level = true;
+        m_parent.start_level(true);
+        wg::entering = true;
+        break;
+      }
+    }
+  }
+
   {
     if (m_parent.m_enter_level && !m_tux->is_moving())
     {
@@ -364,7 +382,17 @@ WorldMapSector::update(float dt_sec)
             m_parent.m_really_enter_level = false;
             m_parent.m_skip_cutscene = false;
           }
+          const bool resuming = wg::entering;
+          if (resuming)
+          {
+            wg::entering = false;
+            m_parent.get_savegame().get_player_status().coins = wg::pending.coins;
+            game_session->set_start_pos(wg::pending.sector, wg::pending.pos);
+          }
           game_session->restart_level();
+          // The power-up goes on once the level's sector is the current one (wg::tick).
+          if (resuming)
+            wg::bonus_pending = true;
 
           // update state and savegame
           m_parent.save_state();

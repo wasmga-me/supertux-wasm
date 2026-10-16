@@ -30,6 +30,7 @@
 #include "supertux/console.hpp"
 #include "supertux/constants.hpp"
 #include "supertux/controller_hud.hpp"
+#include "supertux/d_scope.hpp"
 #include "supertux/debug.hpp"
 #include "supertux/game_manager.hpp"
 #include "supertux/game_session.hpp"
@@ -40,6 +41,12 @@
 #include "supertux/resources.hpp"
 #include "supertux/screen_fade.hpp"
 #include "supertux/sector.hpp"
+#include "supertux/savegame.hpp"
+#include "supertux/title_screen.hpp"
+#include "supertux/wg_snapshot.hpp"
+#include "supertux/world.hpp"
+#include "worldmap/worldmap.hpp"
+#include "worldmap/worldmap_sector.hpp"
 #include "util/log.hpp"
 #include "video/compositor.hpp"
 #include "video/drawing_context.hpp"
@@ -47,6 +54,9 @@
 #include <stdio.h>
 #include <chrono>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -610,8 +620,158 @@ ScreenManager::handle_screen_switch()
   }
 }
 
+namespace {
+bool g_snapshot_requested = false;
+int g_snapshot_count = 0;
+bool g_restore_requested = false;
+bool g_restore_open_map = false;
+} // namespace
+
+#ifdef __EMSCRIPTEN__
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void wg_request_snapshot() { g_snapshot_requested = true; }
+EMSCRIPTEN_KEEPALIVE int wg_snapshot_count() { return g_snapshot_count; }
+EMSCRIPTEN_KEEPALIVE void wg_restore() { g_restore_requested = true; }
+}
+#endif
+
+namespace wg {
+
+static bool write_snapshot(ScreenManager& sm)
+{
+  const auto& stack = sm.get_screen_stack();
+  Screen* top = stack.empty() ? nullptr : stack.back().get();
+  auto* session = dynamic_cast<GameSession*>(top);
+  auto* map = worldmap::WorldMap::current();
+  Snapshot s;
+  // Between the worldmap and a level (its intro, a cutscene): wait.
+  if (map && !world_dir.empty() && !session && !dynamic_cast<worldmap::WorldMap*>(top))
+    return false;
+  if (map && !world_dir.empty())
+  {
+    s.kind = "map";
+    s.world = world_dir;
+    s.map = map->get_filename();
+    s.map_sector = map->get_sector().get_name();
+    if (session && !session->has_active_sequence())
+    {
+      const auto& players = session->get_current_sector().get_players();
+      if (players.empty())
+        return false;
+      Player& player = *players[0];
+      // Somewhere he can start again from: not mid-jump, not falling.
+      if (!player.on_ground() || !player.is_alive())
+        return false;
+      s.kind = "level";
+      s.level = session->get_level_file();
+      s.sector = session->get_current_sector().get_name();
+      s.pos = player.get_pos();
+      s.coins = player.get_status().coins;
+      s.bonus = static_cast<int>(player.get_bonus());
+    }
+  }
+  mkdir("/wg", 0777);
+  std::ofstream out(SNAPSHOT_FILE, std::ios::trunc);
+  out << "supertux-snapshot 1\n"
+      << "kind " << s.kind << "\n"
+      << "world " << s.world << "\n"
+      << "map " << s.map << "\n"
+      << "mapsector " << s.map_sector << "\n"
+      << "level " << s.level << "\n"
+      << "sector " << s.sector << "\n"
+      << "pos " << s.pos.x << " " << s.pos.y << "\n"
+      << "coins " << s.coins << "\n"
+      << "bonus " << s.bonus << "\n";
+  return true;
+}
+
+static bool read_snapshot(Snapshot& s)
+{
+  std::ifstream in(RESTORE_FILE);
+  std::string line;
+  if (!std::getline(in, line) || line != "supertux-snapshot 1")
+    return false;
+  while (std::getline(in, line))
+  {
+    const auto space = line.find(' ');
+    if (space == std::string::npos)
+      continue;
+    const std::string key = line.substr(0, space), value = line.substr(space + 1);
+    if (key == "kind") s.kind = value;
+    else if (key == "world") s.world = value;
+    else if (key == "map") s.map = value;
+    else if (key == "mapsector") s.map_sector = value;
+    else if (key == "level") s.level = value;
+    else if (key == "sector") s.sector = value;
+    else if (key == "pos") std::istringstream(value) >> s.pos.x >> s.pos.y;
+    else if (key == "coins") s.coins = std::stoi(value);
+    else if (key == "bonus") s.bonus = std::stoi(value);
+  }
+  return s.kind == "none" || !s.world.empty();
+}
+
+void tick()
+{
+  auto& sm = *ScreenManager::current();
+  if (g_snapshot_requested && write_snapshot(sm))
+  {
+    g_snapshot_requested = false;
+    g_snapshot_count++;
+  }
+  if (sm.has_pending_fadeout())
+    return;
+  if (bonus_pending)
+  {
+    // Growing looks for room above Tux in his sector, so it runs once the level is up.
+    const auto& stack = sm.get_screen_stack();
+    auto* session = stack.empty() ? nullptr : dynamic_cast<GameSession*>(stack.back().get());
+    if (session)
+    {
+      bonus_pending = false;
+      BIND_SECTOR(session->get_current_sector());
+      const auto& players = session->get_current_sector().get_players();
+      if (!players.empty())
+        players[0]->set_bonus(static_cast<BonusType>(pending.bonus), false, false);
+    }
+  }
+  if (g_restore_requested)
+  {
+    g_restore_requested = false;
+    Snapshot s;
+    if (!read_snapshot(s) || s.kind == "none")
+      return;
+    pending = s;
+    enter_pending = false;
+    bonus_pending = false;
+    // Back to the title screen first; the worldmap opens on the next frame.
+    MenuManager::instance().clear_menu_stack();
+    for (size_t i = 1; i < sm.get_screen_stack().size(); i++)
+      sm.pop_screen();
+    g_restore_open_map = true;
+    return;
+  }
+  if (g_restore_open_map && sm.get_screen_stack().size() == 1)
+  {
+    g_restore_open_map = false;
+    try
+    {
+      auto world = World::from_directory(pending.world);
+      if (GameManager::current()->start_worldmap(*world, pending.map, pending.map_sector))
+        enter_pending = pending.kind == "level";
+    }
+    catch (const std::exception& e)
+    {
+      log_warning << "Couldn't resume: " << e.what() << std::endl;
+    }
+  }
+}
+
+} // namespace wg
+
 void ScreenManager::loop_iter()
 {
+  wg::tick();
+
   auto now = std::chrono::steady_clock::now();
   auto nsecs = std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_time).count();
   elapsed_time += 1e-9f * static_cast<float>(nsecs);
