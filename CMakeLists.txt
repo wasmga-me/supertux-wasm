@@ -75,7 +75,7 @@ include(SuperTux/BuildVersion)
 set(APPDATADIR "${CMAKE_INSTALL_PREFIX}/share/games/supertux2")
 
 set(BUILD_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
-set(BUILD_CONFIG_DATA_DIR "${CMAKE_BINARY_DIR}/data")
+set(BUILD_CONFIG_DATA_DIR "/data")
 
 ## Options for install
 if(WIN32 AND NOT UNIX)
