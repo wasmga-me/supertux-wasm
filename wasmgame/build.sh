@@ -30,7 +30,8 @@
 #
 # Needs git, cmake, make, zip and emsdk 4.0.7 (source emsdk_env.sh first).
 # Usage: sh build.sh [work dir]
-# Writes supertux2.js and supertux2.wasm next to this script, and the zips for
+# Writes supertux2.js, supertux2.wasm and supertux2.symbols.txt (the function
+# names, for the play page's crash trace) next to this script, and the zips for
 # R2 to <work dir>/r2/supertux/ (upload them to wasmgame-files under the same
 # keys). For a newer SuperTux, copy this folder to supertux-<new rev>-p1 and
 # change the revision below; a change to the build here takes the next -p
@@ -95,9 +96,10 @@ git apply "$here/supertux.diff"
 
 emcmake cmake -S . -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DENABLE_NETWORKING=OFF -DPhysFS_PREFER_FIND_PACKAGE=ON
+  -DENABLE_NETWORKING=OFF -DCMAKE_LINKER_FLAGS=--emit-symbol-map -DPhysFS_PREFER_FIND_PACKAGE=ON
 make -j"$(nproc)" -C "$work/build" supertux2
 cp "$work/build/supertux2.js" "$work/build/supertux2.wasm" "$here/"
+cp "$work/build/supertux2.html.symbols" "$here/supertux2.symbols.txt"
 
 rm -rf "$work/r2" && mkdir -p "$work/r2/supertux" "$work/packs"
 cd data
@@ -110,15 +112,20 @@ cp sounds/hurt.wav sounds/kill.wav
 # retro title), the end of level and star music, and the fonts but the
 # Chinese and Japanese one, which is its own zip: the play page waits for it
 # in those languages. world1 also holds the other title and credits music,
-# world2 the second world's own folder.
+# world2 the second world's own folder. start also gets the fire and ice
+# bullets, their glow, the sparkles and rocks Tux gives off and the glint
+# and pieces of frozen enemies (early.txt), which rest keeps too, so its zip
+# stays as it was before they were added.
 find locale shader images/credits images/engine/hud images/engine/menu images/engine/options images/engine/mobile images/powerups sounds speech particles scripts fonts levels/*.nut levels/misc/*.stl levels/world1 music/antarctic/worldmap_ice.* music/misc/leveldone.* music/misc/invincible.* -type f ! -name 'NotoSansCJK*' |
   cat - "$here/pack-start.txt" "$here/pack-menus.txt" | LC_ALL=C sort -u > "$work/packs/start.txt"
+find images/objects/bullets images/objects/lightmap_light/lightmap_light-tiny.* images/particles/rock* images/particles/sparkle* images/particles/glint* images/particles/ice_piece* images/particles/water_piece* -type f | LC_ALL=C sort > "$work/packs/early.txt"
 echo fonts/NotoSansCJKjp-Medium.otf > "$work/packs/cjk.txt"
 find music/misc -type f | cat - "$here/pack-world1.txt" | LC_ALL=C sort -u | LC_ALL=C comm -23 - "$work/packs/start.txt" > "$work/packs/world1.txt"
 find levels/world2 -type f | cat - "$here/pack-world2.txt" | LC_ALL=C sort -u | LC_ALL=C comm -23 - "$work/packs/start.txt" > "$work/packs/world2.txt"
 find . -type f | sed 's|^\./||' | LC_ALL=C sort > "$work/packs/all.txt"
 cat "$work/packs/start.txt" "$work/packs/cjk.txt" "$work/packs/world1.txt" "$work/packs/world2.txt" | LC_ALL=C sort > "$work/packs/listed.txt"
 LC_ALL=C comm -23 "$work/packs/all.txt" "$work/packs/listed.txt" > "$work/packs/rest.txt"
+LC_ALL=C sort -mu -o "$work/packs/start.txt" "$work/packs/start.txt" "$work/packs/early.txt"
 for p in start cjk world1 world2 rest; do
   rm -f "$work/packs/$p.zip"
   zip -q -X -D -9 -n .png:.jpg:.ogg:.ttf:.otf "$work/packs/$p.zip" -@ < "$work/packs/$p.txt"
